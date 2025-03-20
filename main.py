@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-# from prophet import Prophet
+from prophet import Prophet
 from sklearn.metrics import mean_absolute_error
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
