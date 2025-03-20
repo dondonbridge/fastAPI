@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from prophet import Prophet
 from sklearn.metrics import mean_absolute_error
 from sklearn.linear_model import LinearRegression
-import matplotlib.pyplot as plt
 
 app = FastAPI()
 
@@ -32,7 +31,7 @@ df_melted["Production"] = (
 )
 df_melted = df_melted.dropna()
 
-# 🔴 Exclude 2023 and 2024 from training
+# Exclude 2023 and 2024 from training
 train_data = df_melted[df_melted["Year"] <= 2022]
 
 @app.get("/predict")
@@ -51,7 +50,7 @@ def predict_yield():
         model = Prophet(growth="logistic", yearly_seasonality=True, seasonality_mode="multiplicative")
         model.fit(crop_df)
 
-        future = model.make_future_dataframe(periods=5, freq="Y")
+        future = model.make_future_dataframe(periods=8, freq="Y")
         future["cap"] = crop_df["cap"].max()
         forecast = model.predict(future)
 
@@ -64,27 +63,3 @@ def predict_yield():
         errors[crop] = round(mae, 2)
 
     return {"predictions": predictions, "model_errors": errors}
-
-@app.get("/predict/onion")
-def predict_onion_production():
-    onion_data = df_melted[df_melted["Crops"] == "Onion"]
-    years = onion_data["Year"].values.reshape(-1, 1)
-    production = onion_data["Production"].values
-    
-    model = LinearRegression()
-    model.fit(years[:-1], production[:-1])
-
-    future_years = np.array([2025, 2026, 2027, 2028, 2029]).reshape(-1, 1)
-    future_predictions = model.predict(future_years)
-    
-    plt.figure(figsize=(8, 5))
-    plt.scatter(years[:-1], production[:-1], color='blue', label="Actual Data")
-    plt.plot(future_years, future_predictions, 'r--', label="Predicted Data")
-    plt.xlabel("Year")
-    plt.ylabel("Onion Production")
-    plt.title("Onion Production Forecast (2025-2029)")
-    plt.legend()
-    plt.grid()
-    plt.show()
-    
-    return {"onion_production_predictions": {year: round(pred, 2) for year, pred in zip(future_years.flatten(), future_predictions)}}
