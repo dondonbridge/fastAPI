@@ -1,14 +1,13 @@
+from fastapi import FastAPI, HTTPException
 import pandas as pd
-import numpy as np
-from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from prophet import Prophet
-from sklearn.metrics import mean_absolute_error
 from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error
+import numpy as np
 
 app = FastAPI()
 
-# Enable CORS (Allows frontend requests)
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,49 +16,79 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load and preprocess dataset
-df = pd.read_csv("crop_yield_data.csv", header=1)
-df.rename(columns={df.columns[0]: "Crops"}, inplace=True)
+# Dataset mapping
+csv_mapping = {
+    "aurora": "datasets/aurora-production.csv",
+    "bataan": "datasets/bataan-production.csv",
+    "bulacan": "datasets/bulacan-production.csv",
+    "nueva-ecija": "datasets/nueva-ecija-production.csv",
+    "pampanga": "datasets/pampanga-production.csv",
+    "tarlac": "datasets/tarlac-production.csv",
+    "zambales": "datasets/zambales-production.csv",
+}
 
-df_melted = df.melt(id_vars=["Crops"], var_name="Year", value_name="Production")
-df_melted["Year"] = df_melted["Year"].astype(int)
+# Function to load and preprocess CSV (for wide-format dataset)
+def load_and_preprocess(csv_file):
+    try:
+        df = pd.read_csv(csv_file)
 
-df_melted["Production"] = (
-    df_melted["Production"].astype(str).str.replace(",", "", regex=True)
-    .replace({"..": None, "": None})
-    .astype(float)
-)
-df_melted = df_melted.dropna()
+        # Remove commas from all numerical values
+        df.replace(",", "", regex=True, inplace=True)
 
-# Exclude 2023 and 2024 from training
-train_data = df_melted[df_melted["Year"] <= 2022]
+        # Convert wide format to long format
+        df_melted = df.melt(id_vars=["Crops"], var_name="Year", value_name="Production")
 
-@app.get("/predict")
-def predict_yield():
+        # Ensure "Year" is an integer
+        df_melted["Year"] = pd.to_numeric(df_melted["Year"], errors="coerce").astype("Int64")
+
+        # Ensure "Production" is a float
+        df_melted["Production"] = pd.to_numeric(df_melted["Production"], errors="coerce")
+
+        # Drop rows with missing values
+        df_melted.dropna(inplace=True)
+
+        return df_melted
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error loading {csv_file}: {str(e)}")
+
+def predict_crop_yield(csv_file):
+    train_data = load_and_preprocess(csv_file)
     predictions = {}
     errors = {}
-
     unique_crops = train_data["Crops"].unique()
-
+    
     for crop in unique_crops:
         crop_df = train_data[train_data["Crops"] == crop][["Year", "Production"]]
-        crop_df = crop_df.rename(columns={"Year": "ds", "Production": "y"})
-        crop_df["ds"] = pd.to_datetime(crop_df["ds"], format="%Y")
-        crop_df["cap"] = crop_df["y"].max() * 1.2
+        
+        if len(crop_df) < 2:
+            continue  # Skip if there's not enough data to train a model
 
-        model = Prophet(growth="logistic", yearly_seasonality=True, seasonality_mode="multiplicative")
-        model.fit(crop_df)
-
-        future = model.make_future_dataframe(periods=8, freq="Y")
-        future["cap"] = crop_df["cap"].max()
-        forecast = model.predict(future)
-
-        future_predictions = forecast[forecast["ds"].dt.year >= 2023][["ds", "yhat"]]
-        predictions[crop] = {int(year.year): float(pred) for year, pred in zip(future_predictions["ds"], future_predictions["yhat"])}
-
-        actuals = crop_df["y"]
-        predicted = model.predict(crop_df)[["yhat"]]
-        mae = mean_absolute_error(actuals, predicted)
-        errors[crop] = round(mae, 2)
-
+        X = crop_df[["Year"]].values.reshape(-1, 1)
+        y = crop_df["Production"].values
+        
+        model = LinearRegression()
+        model.fit(X, y)
+        
+        future_years = np.array(range(2023, 2028)).reshape(-1, 1)  # Adjust future years
+        future_predictions = model.predict(future_years)
+        
+        predictions[crop] = {int(year): float(pred) for year, pred in zip(future_years.flatten(), future_predictions)}
+        
+        y_pred = model.predict(X)
+        mae = mean_absolute_error(y, y_pred)
+        errors[crop] = float(mae)  # Convert to native Python float
+    
     return {"predictions": predictions, "model_errors": errors}
+
+@app.get("/predict")
+def root_predict():
+    raise HTTPException(status_code=400, detail="Specify a dataset name, e.g., /predict/aurora")
+
+@app.get("/predict/{dataset_name}")
+def predict_yield(dataset_name: str):
+    if dataset_name not in csv_mapping:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+    
+    file_path = csv_mapping[dataset_name]
+    
+    return predict_crop_yield(file_path)
